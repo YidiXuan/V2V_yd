@@ -1,0 +1,139 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import time
+
+# from tensorboardX import SummaryWriter
+
+time = time.time()
+# writer = SummaryWriter('log/Ye_Li/log_' + str(time).split('.')[0])
+# writer = SummaryWriter('log')
+
+# 超参数
+BATCH_SIZE = 1000
+LR = 0.01  # learning rate
+EPSILON = 0.9  # 最优选择动作百分比
+GAMMA = 0.9  # 奖励递减参数
+TARGET_REPLACE_ITER = 100  # Q 现实网络的更新频率
+MEMORY_CAPACITY = 20000  # 记忆库大小
+
+
+class Net(nn.Module):
+    def __init__(self, n_states, n_actions):
+        super(Net, self).__init__()
+        self.fc1 = nn.Linear(n_states, 128)
+        self.fc1.weight.data.normal_(0, 0.1)  # initialization
+        self.fc2 = nn.Linear(128, 64)
+        self.fc2.weight.data.normal_(0, 0.1)  # initialization
+        self.fc3 = nn.Linear(64, 32)
+        self.fc3.weight.data.normal_(0, 0.1)  # initialization
+        self.out = nn.Linear(32, n_actions)
+        self.out.weight.data.normal_(0, 0.1)  # initialization
+
+        # self.fc1 = nn.Linear(n_states, 512)
+        # self.fc1.weight.data.normal_(0, 0.1)   # initialization
+        # self.fc2 = nn.Linear(512, 256)
+        # self.fc2.weight.data.normal_(0, 0.1)  # initialization
+        # self.fc3 = nn.Linear(256, 128)
+        # self.fc3.weight.data.normal_(0, 0.1)  # initialization
+        # self.out = nn.Linear(128, n_actions)
+        # self.out.weight.data.normal_(0, 0.1)   # initialization
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.fc2(x)
+        x = F.relu(x)
+        x = self.fc3(x)
+        x = F.relu(x)
+        actions_value = self.out(x)
+        return actions_value
+
+
+class Ye_Li_DQN(object):
+    def __init__(self, n_states, n_actions):
+        self.n_states = n_states
+        self.n_actions = n_actions
+
+        # 建立 target net 和 eval net 还有 memory
+        self.eval_net, self.target_net = Net(n_states, n_actions), Net(n_states, n_actions)
+
+        self.learn_step_counter = 0  # for target updating
+        self.memory_counter = 0  # for storing memory
+        self.memory = np.zeros((MEMORY_CAPACITY, n_states * 2 + 2))  # initialize memory
+        # n_states * 2 + 2 元组中存储动作选择前后state， 以及动作， reward
+        self.optimizer = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
+        # torch 的优化器
+        self.loss_func = nn.MSELoss()
+        # 误差公式
+
+    def choose_action(self, x):
+        # 根据环境观测值x选择动作的机制
+        x = torch.unsqueeze(torch.FloatTensor(x), 0)
+        # input only one sample
+        if np.random.uniform() < EPSILON:  # greedy
+            # 选最优动作
+            actions_value = self.eval_net.forward(x)
+            action = torch.max(actions_value, 1)[1].data.numpy()
+            action = action[0]
+        else:  # random
+            # 选随机动作
+            action = np.random.randint(0, self.n_actions)
+        return action
+
+    def choose_random_action(self):
+        action = np.random.randint(0, self.n_actions)
+        return action
+
+    def choose_action_test(self, x):
+        # 根据环境观测值x选择动作的机制
+        x = torch.unsqueeze(torch.FloatTensor(x), 0)
+        # input only one sample
+        actions_value = self.target_net.forward(x)
+        action = torch.max(actions_value, 1)[1].data.numpy()
+        action = action[0]
+        return action
+
+    # 存储记忆
+    def store_transition(self, s, a, r, s_):
+        transition = np.hstack((s, [a, r], s_))
+        # replace the old memory with new memory
+        index = self.memory_counter % MEMORY_CAPACITY
+        self.memory[index, :] = transition
+        self.memory_counter += 1
+
+    def learn(self):
+        # target parameter update
+        # 更新现实网络
+        #
+        if self.learn_step_counter % TARGET_REPLACE_ITER == 0:
+            self.target_net.load_state_dict(self.eval_net.state_dict())
+        self.learn_step_counter += 1
+
+        # sample batch transitions
+        sample_index = np.random.choice(MEMORY_CAPACITY, BATCH_SIZE)  # 从MEMORY_CAPACITY中随机猜batch-size数量
+        b_memory = self.memory[sample_index, :]
+        b_s = torch.FloatTensor(b_memory[:, :self.n_states])  # 之前得状态
+        b_a = torch.LongTensor(b_memory[:, self.n_states:self.n_states + 1].astype(int))  # 动作
+        b_r = torch.FloatTensor(b_memory[:, self.n_states + 1:self.n_states + 2])  # reward
+        b_s_ = torch.FloatTensor(b_memory[:, -self.n_states:])  # 转移后得状态
+
+        # q_eval w.r.t the action in experience
+        q_eval = self.eval_net(b_s).gather(1, b_a)  # shape (batch, 1)
+        q_next = self.target_net(b_s_).detach()  # detach from graph, don't backpropagate
+        q_target = b_r + GAMMA * q_next.max(1)[0].view(BATCH_SIZE, 1)  # shape (batch, 1)
+        loss = self.loss_func(q_eval, q_target)
+
+        # writer.add_scalar('Train/Loss', loss.data[0], self.learn_step_counter)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+    def load(self, name):
+        self.target_net.load_state_dict(torch.load(name))
+
+    def save(self, name):
+        torch.save(self.target_net.state_dict(), name + '.pkl')
+
