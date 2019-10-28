@@ -598,14 +598,14 @@ class SingleCell(object):
 
             action = agent.choose_action(state)
 
-        for channel_id in self.__dict_id2channel:
+        '''for channel_id in self.__dict_id2channel:
             channel = self.__dict_id2channel[channel_id]
             for tx_id in range(1 + self.__cue_num, 1 + self.__cue_num + self.__d2d_num):
                 if channel_id != 0:
                     value = channel.get_link_loss_mmwave(tx_id) + random.gauss(0, 1)
                     channel.set_link_loss_mmwave(value, tx_id)
                 value = channel.get_link_loss(tx_id) + random.gauss(0, 1)
-                channel.set_link_loss_cell(value, tx_id)
+                channel.set_link_loss_cell(value, tx_id)'''
 
         # 计算SINR
         for rx_id in self.__dict_id2rx:  # 遍历所有的接收机
@@ -708,13 +708,13 @@ class SingleCell(object):
                 for tx_id_2 in range(1, 1 + self.__cue_num):
                     self.__dict_tx_id2sinr[tx_id_2] = sinr_cue_dict[tx_id_2]
 
-                '''rx_id = temp_tx.get_rx_id()
+                rx_id = temp_tx.get_rx_id()
                 rx = self.__dict_id2rx[rx_id]
                 rb_id = rx.get_allocated_rb()[0]
                 if rb_id != self.__rb_num - 1:
                     rx.comp_sinr(self.__dict_id2tx, self.__dict_id2channel)
                 else:
-                    rx.comp_mmwave_sinr(self.__dict_id2tx, self.__dict_id2channel, self.__dict_id2rx)'''
+                    rx.comp_mmwave_sinr(self.__dict_id2tx, self.__dict_id2channel, self.__dict_id2rx)
 
                 reward_ec = self.compute_reward_tx(temp_tx)
                 reward_ec = reward_ec / pow(10, 7)
@@ -725,10 +725,12 @@ class SingleCell(object):
                         neibours_tx = self.__dict_id2tx[neibours]
                         reward_ec += self.compute_reward_tx(neibours_tx) / pow(10, 7)
                 reward_ec = round(reward_ec / (1 + number_V2V), 1)
+                if reward_ec > 200:
+                    reward_ec = 200
                 rb_id = temp_tx.get_allocated_rb()[0]
-                '''d2d_sinr = rx.get_sinr()
-                if d2d_sinr < 0:
-                    reward_ec = -20'''
+                d2d_sinr = rx.get_sinr()
+                if d2d_sinr < -10:
+                    reward_ec = -20
                 if rb_id != self.__rb_num - 1:  # V2V使用蜂窝频段
                     cue_sinr = self.__dict_tx_id2sinr[rb_id + 1]  # 蜂窝用户的信噪比
                     if cue_sinr < 5:

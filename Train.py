@@ -4,15 +4,15 @@ from vehicular_device import *
 
 if __name__ == '__main__':
     random_slot_num = 2000
-    train_slot_num = 10000
-    test_slot_num = 2000
+    train_slot_num = 40000
+    test_slot_num = 5000
     train_num = 1
     test_num = train_num
 
     all_slot_num = random_slot_num + train_slot_num * train_num + test_slot_num * test_num
 
-    cue_num = 2
-    d2d_num = 6
+    cue_num = 4
+    d2d_num = 10
     rb_num = cue_num + 1
     up_or_down_link = 'up'
     d_tx2rx = 20  # m

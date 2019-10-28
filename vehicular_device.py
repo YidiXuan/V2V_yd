@@ -205,7 +205,11 @@ class CUE(User):
         self.set_v(0)
 
     def initial_user_location(self, highway):
-        x_point = random.randint(highway.get_length()/4, highway.get_length() * 3 / 4)
+        value = random.gauss(0, 1)
+        if value > 0:
+            x_point = random.randint(round(highway.get_length()/8), round(highway.get_length() * 3 / 8))
+        else:
+            x_point = random.randint(round(highway.get_length() * 5 / 8), round(highway.get_length() * 7 / 8))
         y_point = -4
         self.set_location(x_point, y_point)
 
@@ -391,7 +395,7 @@ class D2DTx(User):  # 智能体
             if inter == 0:
                 self.__observation.append(-1)
             else:
-                self.__observation.append(-math.log10(inter) / 10)
+                self.__observation.append(round(-math.log10(inter) / 10, 1))
 
         # 状态空间上一时隙邻居用户使用的rb
         for nei_rb in range(rb_num):
@@ -401,8 +405,8 @@ class D2DTx(User):  # 智能体
                 self.__observation.append(0)
 
         # 观测到的毫米波和蜂窝频段csi
-        self.__observation.append(self.__v2v_csi_mmwave/100)  # CSI of D2D link
-        self.__observation.append(self.__v2v_csi_cell/100)  # CSI of mmWave
+        self.__observation.append(round(self.__v2v_csi_mmwave/10, 1))  # CSI of D2D link
+        self.__observation.append(round(self.__v2v_csi_cell/10, 1))  # CSI of mmWave
 
         # 观测到的V2V对bs的csi
         # self.__observation.append(self.__tx2bs_csi/100)  # CSI of cellular link
