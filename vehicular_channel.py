@@ -18,7 +18,7 @@ class Channel(object):
         blockers = single_cell.accumulate_blockers(tx_device.get_id(), tx_device.get_x_point(), tx_device.get_y_point(),
                                                    rx_device.get_x_point(), rx_device.get_y_point())
         if tx_device.get_direction() != rx_device.get_direction():
-            blockers +=1
+            blockers += 1
         # blockers += random.randint(0, 1)
         # print('blockers  '+ str(blockers))
         self.__id2distance[tx_device.get_id()] = distance
@@ -93,10 +93,10 @@ class Channel(object):
         shadow = random.normalvariate(0, 10)
         # shadow = 0
         self.__link_loss[tx_device.get_id()] = link_loss + shadow'''
-        link_loss = 63.3 + 10 * math.log10(distance / 10) + random.uniform(0, 3.1) + direction * 3.3
-        link_loss = 22.7 * math.log10(distance) + 41 + 20 * math.log10(2 / 5) + random.uniform(0, 3)
+        # link_loss = 63.3 + 10 * math.log10(distance / 10) + random.uniform(0, 3.1) + direction * 3.3
+        link_loss = 22.7 * math.log10(distance) + 41 + 20 * math.log10(2 / 5) # + random.uniform(0, 3)
         if rx_device.get_id() == 0:
-            link_loss = 22.7 * math.log10(distance) + 41 + 20 * math.log10(2 / 5) + random.uniform(0, 5)
+            link_loss = 22.7 * math.log10(distance) + 41 + 20 * math.log10(2 / 5) # + random.uniform(0, 5)
         self.__link_loss_cell[tx_device.get_id()] = link_loss
 
     def get_rx_id(self):

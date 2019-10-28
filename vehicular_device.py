@@ -1,6 +1,25 @@
 from vehicular_channel import *
 from buffer_data_packet import *
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import time
+
+# from tensorboardX import SummaryWriter
+
+time = time.time()
+# writer = SummaryWriter('log/Ye_Li/log_' + str(time).split('.')[0])
+# writer = SummaryWriter('log')
+
+# 超参数
+BATCH_SIZE = 1000
+LR = 0.01  # learning rate
+EPSILON = 0.9  # 最优选择动作百分比
+GAMMA = 0.9  # 奖励递减参数
+TARGET_REPLACE_ITER = 100  # Q 现实网络的更新频率
+MEMORY_CAPACITY = 20000  # 记忆库大小
 random.seed()  # 随机数种子
 
 
@@ -158,21 +177,25 @@ class User(Interface):
     def get_allocated_rb(self):
         return self.__allocated_rb
 
+    def clear_allocated_rb(self):
+        self.__allocated_rb = []
+
     '''def update_location(self):
         self.__x_point += random.normalvariate(0, 1)
         self.__y_point += random.normalvariate(0, 1)'''
 
     def initial_user_location(self, highway):
-        self.__x_point = highway.get_start_x_point() + random.random() * highway.get_length()
+        self.__x_point = highway.get_start_x_point() + round(random.random() * highway.get_length(), 2)
+        chedao_index = random.randint(0, 1)
         if self.__direction == 1:
-            self.__y_point = highway.get_start_y_point() + random.randint(1, highway.get_width() / 2)
+            self.__y_point = highway.get_start_y_point() + highway.get_width() / 8 + chedao_index * highway.get_width() / 4
         else:
-            self.__y_point = highway.get_start_y_point() + random.randint(1 + highway.get_width() / 2, highway.get_width())
+            self.__y_point = highway.get_start_y_point() + highway.get_width() / 8 + chedao_index * highway.get_width() / 4 + highway.get_width() / 2
 
 
 # V2I用户类 使用User类创建V2I用户
 class CUE(User):
-    def __init__(self, i_id, i_type, power=17):
+    def __init__(self, i_id, i_type, power=23):
         User.__init__(self, i_id, i_type)
         self.__power = power
         self.__tx_id = 0
@@ -182,8 +205,8 @@ class CUE(User):
         self.set_v(0)
 
     def initial_user_location(self, highway):
-        x_point = random.uniform(0, highway.get_length())
-        y_point = -2
+        x_point = random.randint(highway.get_length()/4, highway.get_length() * 3 / 4)
+        y_point = -4
         self.set_location(x_point, y_point)
 
     def update_location_after_spectrum_allocation(self, time):
@@ -199,13 +222,92 @@ class CUE(User):
 
 
 # D2D发射机类,use class User
-class D2DTx(User):
+class D2DTx(User):  # 智能体
     def __init__(self, i_id, i_type, power=17):
         User.__init__(self, i_id, i_type, 30)
         # user User's initial function create D2D transmitter's location ,RB and interface‘s id and type
         self.__rx_id = -1
         self.__power = power
         self.__blockers = 0
+        self.__previous_rb = -1  # 智能体上一个时隙使用的信道  大小为 1
+        self.__neighbor_V2V = []
+
+        # 观测到的环境
+        self.__v2v_csi_mmwave = -1  # 毫米波瞬时CSI 1
+        self.__v2v_csi_cell = -1  # 蜂窝V2V瞬时CSI 1
+        # self.bs2rx_csi = -1  # 蜂窝用户的CSI 1
+        self.__tx2bs_csi = -1  # V2V 发射机对于bs的干扰 1
+        self.__p0 = 0.01
+
+        self.__previous_inter = []  # 智能体感知到的每一个信道上的干扰  大小为 1*(m+1)
+        self.previous_neibor_rb = []  # 只能提邻居用户使用的信道  1*(m+1)
+
+        self.__delay_requirement = 0.001  # V2V链路的延迟约束参数 1 服务1：10ms 服务2：100ms
+        self.__arrival_rate = 64000  # V2V链路的到达参数 1 服务1：0.01*6400*1000 bits 服务2：0.01*6400*1000
+
+        self.__cue_sinr = -1
+
+        self.__observation = []  # 智能体观测的环境 5+2*(m+1) = 8 + 2m
+        # self.__bs2v2v_csi_cell = -1  # 蜂窝到V2V的干扰CSI
+
+    def set_Qos(self, cue_num, d2d_num):
+        if self.get_id() in range(1 + cue_num, 1 + cue_num + d2d_num / 2):
+            self.__delay_requirement = 0.01
+            # self.__arrival_rate = 0.01 * 6400 * 1000
+        else:
+            # self.__arrival_rate = 0.1 * 6400 * 1000
+            self.__delay_requirement = 0.1
+
+    def set_cue_sinr(self, cue_sinr):
+        self.__cue_sinr = cue_sinr
+
+    def set_previous_rb(self, rb_id):
+        self.__previous_rb = rb_id
+
+    def set_v2v_csi_mmwave(self, value):
+        self.__v2v_csi_mmwave = value
+
+    def set_v2v_csi_cell(self, value):
+        self.__v2v_csi_cell = value
+
+    def set_tx2bs_csi(self, value):
+        self.__tx2bs_csi = value
+
+    def get_delay_requirement(self):
+        return self.__delay_requirement
+
+    def get_arrival_rate(self):
+        return self.__arrival_rate
+
+    def get_outage_probability(self):
+        return self.__p0
+
+    def add_prevousr_inter_neibour(self, power):
+        self.__previous_inter.append(power)
+
+    def get_previous_inter(self):
+        return self.__previous_inter
+
+    def clear_neibour_rb(self):
+        self.previous_neibor_rb = []
+
+    def add_neibour_rb(self, rb_id):
+        self.previous_neibor_rb.append(rb_id)
+
+    def get_neibor_rb(self):
+        return self.previous_neibor_rb
+
+    def add_neibour_V2V(self, neibour_tx_id):
+        self.__neighbor_V2V.append(neibour_tx_id)
+
+    def get_neibor_V2V(self):
+        return self.__neighbor_V2V
+
+    def clear_previous_inter(self):
+        self.__previous_inter = []
+
+    def clear_previous_neibour_rb(self):
+        self.__neighbor_V2V = []
 
     def set_power(self, power):
         self.__power = power
@@ -262,6 +364,79 @@ class D2DTx(User):
             tx_a_gain = gain_sl
         return tx_a_gain
 
+    def update_arrival_rate_and_delay(self, slot):  # 更新车辆进行的服务
+        probability = random.random()
+        if probability > 0:
+            self.__delay_requirement = 0.01
+            self.__arrival_rate = 0.01*6400*1000
+        else:
+            self.__arrival_rate = 0.1 * 6400 * 1000
+            self.__delay_requirement = 0.1
+
+
+    def obverse_environment(self, rb_num, single_cell):
+        # 维度 2 * rb_num + 8
+        self.__observation = []
+
+        # 状态空间观测到的上一时隙使用rb
+        self.__observation.append(self.__previous_rb)
+        # for i in range(rb_num):
+            # if i == self.__previous_rb:
+                # self.__observation.append(1)
+            # else:
+                # self.__observation.append(0)
+
+        # 状态空间种观测到的上一时隙的干扰
+        for inter in self.__previous_inter:
+            if inter == 0:
+                self.__observation.append(-1)
+            else:
+                self.__observation.append(-math.log10(inter) / 10)
+
+        # 状态空间上一时隙邻居用户使用的rb
+        for nei_rb in range(rb_num):
+            if nei_rb in self.previous_neibor_rb:
+                self.__observation.append(1)
+            else:
+                self.__observation.append(0)
+
+        # 观测到的毫米波和蜂窝频段csi
+        self.__observation.append(self.__v2v_csi_mmwave/100)  # CSI of D2D link
+        self.__observation.append(self.__v2v_csi_cell/100)  # CSI of mmWave
+
+        # 观测到的V2V对bs的csi
+        # self.__observation.append(self.__tx2bs_csi/100)  # CSI of cellular link
+
+        # 观测到的节点QoS
+        self.__observation.append(self.__delay_requirement)
+        self.__observation.append(self.__arrival_rate)
+
+        # 观测到对cue信道情况
+        self.__observation.append(self.__cue_sinr)
+
+
+    def get_state(self, rb_num, single_cell):
+            self.obverse_environment(rb_num, single_cell)
+            state = self.__observation
+            state = np.array(state)  # numpy array
+            return state
+
+    def do_action(self, action, dict_id2rx, rb_num):
+            # rb_id = int(action / 3)
+            rb_id = int(action)
+
+            self.set_allocated_rb(rb_id)
+            rx = dict_id2rx[self.__rx_id]
+            rx.set_allocated_rb(rb_id)
+
+            # power = 3 + (action % 3) * 10  # 3,13,23 dBm
+            # self.__power = power
+            # self.__power = 13
+
+            print('D2DTx ' + str(self.get_id())
+                  + ' choose RB: ' + str(rb_id)
+                  + ' power: ' + str(self.__power))
+
 
 # D2D接收机类,use class User
 class D2DRx(User):
@@ -298,12 +473,18 @@ class D2DRx(User):
 
     # 初始化v2v接受车辆的位置，与发射车辆举例小于10m
     def initial_user_location(self, highway, v2v_tx_vehicle):
-        temp_x = random.uniform(0, 20)
-        x_point = v2v_tx_vehicle.get_x_point() + temp_x
-        if self.get_direction() == 1:
-            y_point = random.randint(1, highway.get_width() / 2)
+        temp_x = random.randint(15, 30)
+        pro = random.gauss(0, 1)
+        if pro > 0.5:
+            x_point = v2v_tx_vehicle.get_x_point() + temp_x
         else:
-            y_point = random.randint(1 + highway.get_width() / 2, highway.get_width())
+            x_point = v2v_tx_vehicle.get_x_point() - temp_x
+
+        chedao_index = random.randint(0, 1)
+        if self.get_direction() == 1:
+            y_point = highway.get_start_y_point() + highway.get_width() / 8 + chedao_index * highway.get_width() / 4
+        else:
+            y_point = highway.get_start_y_point() + highway.get_width() / 8 + chedao_index * highway.get_width() / 4 + highway.get_width() / 2
         self.set_location(x_point, y_point)
 
     # 更新车辆位置，车辆仅直线行驶
@@ -452,3 +633,122 @@ class Highway(object):
 
     def get_width(self):
         return self.__width
+
+
+class Net(nn.Module):
+    def __init__(self, n_states, n_actions):
+        super(Net, self).__init__()
+        self.fc1 = nn.Linear(n_states, 128)
+        self.fc1.weight.data.normal_(0, 0.1)  # initialization
+        self.fc2 = nn.Linear(128, 64)
+        self.fc2.weight.data.normal_(0, 0.1)  # initialization
+        self.fc3 = nn.Linear(64, 32)
+        self.fc3.weight.data.normal_(0, 0.1)  # initialization
+        self.out = nn.Linear(32, n_actions)
+        self.out.weight.data.normal_(0, 0.1)  # initialization
+
+        # self.fc1 = nn.Linear(n_states, 512)
+        # self.fc1.weight.data.normal_(0, 0.1)   # initialization
+        # self.fc2 = nn.Linear(512, 256)
+        # self.fc2.weight.data.normal_(0, 0.1)  # initialization
+        # self.fc3 = nn.Linear(256, 128)
+        # self.fc3.weight.data.normal_(0, 0.1)  # initialization
+        # self.out = nn.Linear(128, n_actions)
+        # self.out.weight.data.normal_(0, 0.1)   # initialization
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.fc2(x)
+        x = F.relu(x)
+        x = self.fc3(x)
+        x = F.relu(x)
+        actions_value = self.out(x)
+        return actions_value
+
+
+class Ye_Li_DQN(object):
+    def __init__(self, n_states, n_actions):
+        self.n_states = n_states
+        self.n_actions = n_actions
+
+        # 建立 target net 和 eval net 还有 memory
+        self.eval_net, self.target_net = Net(n_states, n_actions), Net(n_states, n_actions)
+
+        self.learn_step_counter = 0  # for target updating
+        self.memory_counter = 0  # for storing memory
+        self.memory = np.zeros((MEMORY_CAPACITY, n_states * 2 + 2))  # initialize memory
+        # n_states * 2 + 2 元组中存储动作选择前后state， 以及动作， reward
+        self.optimizer = torch.optim.Adam(self.eval_net.parameters(), lr=LR)
+        # torch 的优化器
+        self.loss_func = nn.MSELoss()
+        # 误差公式
+
+    def choose_action(self, x):
+        # 根据环境观测值x选择动作的机制
+        x = torch.unsqueeze(torch.FloatTensor(x), 0)
+        # input only one sample
+        if np.random.uniform() < EPSILON:  # greedy
+            # 选最优动作
+            actions_value = self.eval_net.forward(x)
+            action = torch.max(actions_value, 1)[1].data.numpy()
+            action = action[0]
+        else:  # random
+            # 选随机动作
+            action = np.random.randint(0, self.n_actions)
+        return action
+
+    def choose_random_action(self):
+        action = np.random.randint(0, self.n_actions)
+        return action
+
+    def choose_action_test(self, x):
+        # 根据环境观测值x选择动作的机制
+        x = torch.unsqueeze(torch.FloatTensor(x), 0)
+        # input only one sample
+        actions_value = self.target_net.forward(x)
+        action = torch.max(actions_value, 1)[1].data.numpy()
+        action = action[0]
+        return action
+
+    # 存储记忆
+    def store_transition(self, s, a, r, s_):
+        transition = np.hstack((s, [a, r], s_))
+        # replace the old memory with new memory
+        index = self.memory_counter % MEMORY_CAPACITY
+        self.memory[index, :] = transition
+        self.memory_counter += 1
+
+    def learn(self):
+        # target parameter update
+        # 更新现实网络
+        #
+        if self.learn_step_counter % TARGET_REPLACE_ITER == 0:
+            self.target_net.load_state_dict(self.eval_net.state_dict())
+        self.learn_step_counter += 1
+
+        # sample batch transitions
+        sample_index = np.random.choice(MEMORY_CAPACITY, BATCH_SIZE)  # 从MEMORY_CAPACITY中随机猜batch-size数量
+        b_memory = self.memory[sample_index, :]
+        b_s = torch.FloatTensor(b_memory[:, :self.n_states])  # 之前得状态
+        b_a = torch.LongTensor(b_memory[:, self.n_states:self.n_states + 1].astype(int))  # 动作
+        b_r = torch.FloatTensor(b_memory[:, self.n_states + 1:self.n_states + 2])  # reward
+        b_s_ = torch.FloatTensor(b_memory[:, -self.n_states:])  # 转移后得状态
+
+        # q_eval w.r.t the action in experience
+        q_eval = self.eval_net(b_s).gather(1, b_a)  # shape (batch, 1)
+        q_next = self.target_net(b_s_).detach()  # detach from graph, don't backpropagate
+        q_target = b_r + GAMMA * q_next.max(1)[0].view(BATCH_SIZE, 1)  # shape (batch, 1)
+        loss = self.loss_func(q_eval, q_target)
+
+        # writer.add_scalar('Train/Loss', loss.data[0], self.learn_step_counter)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+    def load(self, name):
+        self.target_net.load_state_dict(torch.load(name))
+
+    def save(self, name):
+        torch.save(self.target_net.state_dict(), name + '.pkl')

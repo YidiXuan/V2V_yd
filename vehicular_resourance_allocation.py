@@ -7,7 +7,7 @@ def random_allocation(dict_id2tx, dict_id2rx, rb_num):
     for rx_id in dict_id2rx:
         tx_id = dict_id2rx[rx_id].get_tx_id()
         if type(tx_id) == int:  # D2D
-            if random.random() > 0:
+            if random.random() > 0.5:
                 rb_id = rb_num-1
             else:
                 rb_id = random.randint(0, rb_num - 1)
